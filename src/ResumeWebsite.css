@@ -1,0 +1,93 @@
+/* ResumeWebsite.css */
+body {
+  margin: 0;
+  font-family: sans-serif;
+  background-color: #000;      /* black background */
+  color: #fff;                /* white text */
+  line-height: 1.5;
+}
+
+.hero {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: 0 1.5rem;
+}
+
+.hero h1 {
+  font-size: 3rem;
+  margin-bottom: 1rem;
+}
+
+@media (min-width: 768px) {
+  .hero h1 {
+    font-size: 4rem;
+  }
+}
+
+.hero p {
+  font-size: 1.25rem;
+  max-width: 40rem;
+  color: #d1d5db;  /* gray-300 */
+}
+
+.section {
+  padding: 5rem 1.5rem;
+}
+
+.bg-gray-900 {
+  background-color: #111827;
+}
+
+.text-center {
+  text-align: center;
+}
+
+.max-w-4xl {
+  max-width: 56rem;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.grid {
+  display: grid;
+}
+
+.grid-cols-1 {
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+}
+
+.md\\:grid-cols-2 {
+  /* using a “md:” class inside CSS requires escaping the colon */
+}
+
+@media (min-width: 768px) {
+  .md\\:grid-cols-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.gap-6 {
+  gap: 1.5rem;
+}
+
+.bg-gray-800 {
+  background-color: #1f2937;
+}
+
+.bg-gray-700 {
+  background-color: #374151;
+}
+
+.rounded-lg {
+  border-radius: 0.5rem;
+}
+
+.text-gray-200 {
+  color: #e5e7eb;
+}
+
+/* etc... you can continue to define all the classes from your JSX */
