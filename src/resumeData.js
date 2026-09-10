@@ -7,7 +7,7 @@ export const missions = [
 ];
 export const capabilities = [
  ['01', 'DEFEND', 'Cybersecurity & infrastructure', 'Security hardening, STIG implementation, patch compliance, Active Directory, and remote administration.'],
- ['02', 'AUTOMATE', 'Make systems work smarter', 'PowerShell scripting, DevOps pipelines, SharePoint workflows, and enterprise modernization.'],
+ ['02', 'AUTOMATE', 'Make systems work smarter', 'Intelligence Architecture, AI Research, PowerShell scripting, DevOps pipelines, SharePoint workflows, and enterprise modernization.'],
  ['03', 'BUILD', 'From interface to infrastructure', 'React, JavaScript, UI/UX, Web3 integration, and algorithm-driven platform development.'],
  ['04', 'LEAD', 'People behind the technology', 'Project delivery, contractor coordination, team development, and customer communication under pressure.'],
 ];

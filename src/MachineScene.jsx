@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
+import CoreDefense, { MISSILE_POOL_SIZE } from './CoreDefense';
 
 const modules = [
   { id: 'identity', title: 'THE OPERATOR', sub: 'Identity / James McGonigal', color: '#baffb1', position: [-3.8, 2.0, .25] },
@@ -19,13 +20,16 @@ function glowTexture() {
   return new THREE.CanvasTexture(canvas);
 }
 
-export default function MachineScene({ active, reveal, quiet, onSelect, onFallback, onPulse }) {
+export default function MachineScene({ active, reveal, quiet, onSelect, onFallback, onPulse, gamePhase, gamePaused, onIntercept, onGameEvent, gameLevel }) {
   const mount = useRef(null);
   const labels = useRef([]);
   const cable = useRef(null);
-  const current = useRef({ active, reveal, quiet });
+  const targets = useRef([]);
+  const defenseRef = useRef(null);
+  const powerupTarget = useRef(null);
+  const current = useRef({ active, reveal, quiet, gamePhase, gamePaused, onIntercept, onGameEvent, gameLevel });
   const [ready, setReady] = useState(false);
-  useEffect(() => { current.current = { active, reveal, quiet }; }, [active, reveal, quiet]);
+  useEffect(() => { current.current = { active, reveal, quiet, gamePhase, gamePaused, onIntercept, onGameEvent, gameLevel }; }, [active, reveal, quiet, gamePhase, gamePaused, onIntercept, onGameEvent, gameLevel]);
 
   useEffect(() => {
     const host = mount.current;
@@ -115,12 +119,27 @@ export default function MachineScene({ active, reveal, quiet, onSelect, onFallba
     });
     const fogGreen = scene.fog.color.clone();
     const fogRed = new THREE.Color('#0c0406');
+    const corePosition = new THREE.Vector3();
+    const defense = new CoreDefense(scene, camera, () => machine.getWorldPosition(corePosition), () => current.current.onIntercept(), event => current.current.onGameEvent(event));
+    defenseRef.current = defense;
+    let previousGamePhase = 'idle';
     const pointer = new THREE.Vector2(); const drag = { down: false, x: 0, turn: 0, target: 0 };
     const resize = () => { width = host.clientWidth; height = host.clientHeight; renderer.setSize(width, height); camera.aspect = width / height; camera.updateProjectionMatrix(); };
     const observer = new ResizeObserver(resize); observer.observe(host);
     const move = event => { const rect = host.getBoundingClientRect(); pointer.set((event.clientX - rect.left) / width * 2 - 1, -((event.clientY - rect.top) / height * 2 - 1)); if (drag.down) { drag.target += (event.clientX - drag.x) * .004; drag.x = event.clientX; } };
-    const down = event => { if (event.target.closest('button')) return; drag.down = true; drag.x = event.clientX; host.setPointerCapture(event.pointerId); };
-    const up = () => { drag.down = false; };
+    const down = event => { if (event.target.closest('button') || current.current.gamePhase === 'playing') return; drag.down = true; drag.x = event.clientX; host.setPointerCapture(event.pointerId); };
+    const up = event => {
+      drag.down = false;
+      if (event.type === 'pointerup' && current.current.gamePhase === 'playing' && !event.target.closest('button')) {
+        const rect = host.getBoundingClientRect(); defense.fire(event.clientX - rect.left, event.clientY - rect.top, current.current.quiet);
+      }
+    };
+    const defendKey = event => {
+      if (event.code === 'Space' && current.current.gamePhase === 'playing' && !event.target.closest('input,textarea,button')) {
+        event.preventDefault(); defense.fireNearest(current.current.quiet);
+      }
+    };
+    window.addEventListener('keydown', defendKey);
     const lost = event => { event.preventDefault(); onFallback(); };
     host.addEventListener('pointermove', move); host.addEventListener('pointerdown', down); host.addEventListener('pointerup', up); host.addEventListener('pointercancel', up);
     renderer.domElement.addEventListener('webglcontextlost', lost);
@@ -131,17 +150,18 @@ export default function MachineScene({ active, reveal, quiet, onSelect, onFallba
       if (document.hidden) { last = now; return; }
       const dt = Math.min((now - last) / 1000, .05); last = now;
       const state = current.current;
+      const alarm = state.reveal && state.gamePhase !== 'secured';
       const colorBlend = state.quiet ? 1 : Math.min(dt * 6, 1);
-      themedColors.forEach(item => item.color.lerp(state.reveal ? item.red : item.original, colorBlend));
-      scene.fog.color.lerp(state.reveal ? fogRed : fogGreen, colorBlend);
-      light.color.set(state.reveal ? '#ff758e' : '#c8a5ff');
-      ambientLight.color.set(state.reveal ? '#ff758e' : '#75ffa1');
+      themedColors.forEach(item => item.color.lerp(alarm ? item.red : item.original, colorBlend));
+      scene.fog.color.lerp(alarm ? fogRed : fogGreen, colorBlend);
+      light.color.set(alarm ? '#ff758e' : '#c8a5ff');
+      ambientLight.color.set(alarm ? '#ff758e' : '#75ffa1');
       for (let i = 0; i < gridColors.array.length; i += 3) {
         const r = originalGridColors[i], g = originalGridColors[i + 1], b = originalGridColors[i + 2];
         const high = Math.max(r, g, b), low = Math.min(r, g, b);
-        gridColors.array[i] += ((state.reveal ? high : r) - gridColors.array[i]) * colorBlend;
-        gridColors.array[i + 1] += ((state.reveal ? low : g) - gridColors.array[i + 1]) * colorBlend;
-        gridColors.array[i + 2] += ((state.reveal ? low + (high - low) * .18 : b) - gridColors.array[i + 2]) * colorBlend;
+        gridColors.array[i] += ((alarm ? high : r) - gridColors.array[i]) * colorBlend;
+        gridColors.array[i + 1] += ((alarm ? low : g) - gridColors.array[i + 1]) * colorBlend;
+        gridColors.array[i + 2] += ((alarm ? low + (high - low) * .18 : b) - gridColors.array[i + 2]) * colorBlend;
       }
       gridColors.needsUpdate = true;
       if (state.reveal !== wasRevealed) { deploymentStarted = now; wasRevealed = state.reveal; }
@@ -156,13 +176,15 @@ export default function MachineScene({ active, reveal, quiet, onSelect, onFallba
       machine.rotation.y = drag.turn + (state.quiet ? 0 : pointer.x * .08);
       machine.rotation.x = state.quiet ? 0 : pointer.y * .035;
       core.rotation.set(time * .055, time * .11, time * .025);
-      const spread = state.reveal ? 1.65 : 1;
+      core.scale.setScalar(1 + defense.impact * .055);
+      const inCombat = state.gamePhase === 'playing';
+      const spread = inCombat ? .85 : state.reveal ? 1.65 : 1;
       shell.scale.lerp(new THREE.Vector3(spread, spread, spread), Math.min(dt * 3, 1));
       shellFaces.material.opacity = THREE.MathUtils.damp(shellFaces.material.opacity, state.reveal ? 0 : .22, 5, dt);
       inner.rotation.y = -time * .26;
       teeth.rotation.z = -time * .075;
       shards.forEach(shard => {
-        const expansion = state.reveal ? 2.05 : 1 + Math.sin(time * .7 + shard.angle) * .08;
+        const expansion = inCombat ? .85 : state.reveal ? 2.05 : 1 + Math.sin(time * .7 + shard.angle) * .08;
         shard.mesh.position.lerp(shard.base.clone().multiplyScalar(expansion), Math.min(dt * 3, 1));
         shard.mesh.rotation.set(time * .2, shard.angle + time * .4, shard.angle);
       });
@@ -182,8 +204,8 @@ export default function MachineScene({ active, reveal, quiet, onSelect, onFallba
         particleGeometry.attributes.position.needsUpdate = true;
       }
       nodes.forEach(node => {
-        const deployed = state.reveal && (state.quiet || now - deploymentStarted >= node.index * 90) ? 1 : 0;
-        node.deployment = state.quiet ? deployed : THREE.MathUtils.damp(node.deployment, deployed, 7, dt);
+        const deployed = state.reveal && state.gamePhase !== 'playing' && (state.quiet || now - deploymentStarted >= node.index * 90) ? 1 : 0;
+        node.deployment = state.quiet || state.gamePhase === 'playing' ? deployed : THREE.MathUtils.damp(node.deployment, deployed, 7, dt);
         const extension = .08 + node.deployment * .92;
         node.group.position.copy(node.home).multiplyScalar(extension);
         node.satellite.rotation.set(time * .3, time * .4, 0); node.orbit.rotation.y = time * .3;
@@ -195,6 +217,27 @@ export default function MachineScene({ active, reveal, quiet, onSelect, onFallba
         node.packet.position.copy(node.curve.getPoint((time * .15 + node.index * .2) % 1)).multiplyScalar(extension);
       });
       machine.updateMatrixWorld(true);
+      if (state.gamePhase === 'detonating' && previousGamePhase !== 'detonating') {
+        nodes.forEach(node => { node.group.getWorldPosition(projected); defense.burst(projected, '#ff78b0', state.quiet); });
+      }
+      previousGamePhase = state.gamePhase;
+      defense.update(dt, { phase: state.gamePhase, paused: state.gamePaused, quiet: state.quiet, width, height });
+      const pickup = powerupTarget.current;
+      if (pickup) {
+        pickup.hidden = defense.powerup.state !== 'flying' || state.gamePhase !== 'playing' || Boolean(state.active);
+        pickup.disabled = state.gamePaused;
+        const point = defense.project(defense.powerup.group.position);
+        pickup.style.transform = `translate(${point.x}px,${point.y}px) translate(-50%,-50%)`;
+      }
+      defense.missiles.forEach((missile, index) => {
+        const target = targets.current[index]; if (!target) return;
+        target.hidden = !missile.active || state.gamePhase !== 'playing' || Boolean(state.active);
+        target.disabled = state.gamePaused;
+        if (missile.active) {
+          const point = defense.project(missile.group.position);
+          target.style.transform = `translate(${point.x}px,${point.y}px) translate(-50%,-50%)`;
+        }
+      });
       nodes.forEach(node => {
         node.group.getWorldPosition(projected); projected.project(camera);
         const label = labels.current[node.index];
@@ -217,17 +260,20 @@ export default function MachineScene({ active, reveal, quiet, onSelect, onFallba
     frame = requestAnimationFrame(render); setReady(true);
     return () => {
       cancelAnimationFrame(frame); observer.disconnect();
+      window.removeEventListener('keydown', defendKey); defense.dispose(); defenseRef.current = null;
       host.removeEventListener('pointermove', move); host.removeEventListener('pointerdown', down); host.removeEventListener('pointerup', up); host.removeEventListener('pointercancel', up);
       renderer.domElement.removeEventListener('webglcontextlost', lost);
       geometries.forEach(value => value.dispose()); materials.forEach(value => value.dispose()); texture.dispose(); renderer.dispose(); renderer.domElement.remove();
     };
   }, [onFallback]);
 
-  return <div ref={mount} className={`machine-scene ${ready ? 'ready' : ''} ${reveal ? 'cards-deployed' : 'core-sealed'}`} aria-label="Interactive identity machine. Drag to rotate. Expose the core to unfold its five modules.">
+  return <div ref={mount} className={`machine-scene ${ready ? 'ready' : ''} ${reveal ? 'cards-deployed' : 'core-sealed'} ${gamePhase === 'detonating' ? 'cards-detonating' : ''} ${gamePhase === 'playing' ? 'defense-playing' : ''}`} aria-label={gamePhase === 'playing' ? 'Core defense. Click or tap near a missile to zap it. Space intercepts the nearest threat. No loss condition.' : 'Interactive identity machine. Drag to rotate. Expose the core to unfold its five modules.'}>
     <div className="machine-crosshair" aria-hidden="true" />
     <svg className="dossier-cable" aria-hidden="true" style={{ opacity: active ? 1 : 0 }}><path ref={cable}/></svg>
-    {modules.map((module, index) => <button ref={element => { labels.current[index] = element; }} key={module.id} className={`satellite-label ${active === module.id ? 'selected' : ''}`} style={{ '--node-color': module.color }} onClick={() => onSelect(module.id)} aria-hidden={!reveal} tabIndex={reveal ? 0 : -1} aria-pressed={active === module.id}><span className="satellite-index">0{index + 1} <span>↗</span></span><strong>{module.title}</strong><small>{module.sub}</small><span className="satellite-pin" /></button>)}
-    {!active && <button className="core-trigger" onClick={onPulse} aria-expanded={reveal} aria-label={reveal ? 'Close core and retract all modules' : 'Expose core and unfold all five modules'}><span>{reveal ? 'CLOSE' : 'EXPOSE'}<br />CORE</span></button>}
+    {modules.map((module, index) => <button ref={element => { labels.current[index] = element; }} key={module.id} className={`satellite-label ${active === module.id ? 'selected' : ''}`} style={{ '--node-color': module.color }} onClick={() => onSelect(module.id)} aria-hidden={!reveal || gamePhase === 'playing' || gamePhase === 'detonating'} tabIndex={reveal && gamePhase !== 'playing' && gamePhase !== 'detonating' ? 0 : -1} aria-pressed={active === module.id}><span className="satellite-index">0{index + 1} <span>↗</span></span><strong>{module.title}</strong><small>{module.sub}</small><span className="satellite-pin" /></button>)}
+    {Array.from({ length: MISSILE_POOL_SIZE }, (_, index) => <button key={index} hidden className="missile-hitbox" ref={element => { targets.current[index] = element; }} aria-label={`Intercept missile ${index + 1}`} onClick={() => { const defense = defenseRef.current; const missile = defense?.missiles[index]; if (missile?.active) { const point = defense.project(missile.group.position); defense.fire(point.x, point.y, current.current.quiet); } }}/>) }
+    <button ref={powerupTarget} hidden className="missile-hitbox powerup-hitbox" style={{width:96,height:96,zIndex:4}} aria-label="Capture green cube auto-defense powerup" onClick={() => { const defense = defenseRef.current; if (defense?.powerup.state === 'flying') { const point = defense.project(defense.powerup.group.position); defense.fire(point.x, point.y, current.current.quiet); } }}/>
+    {!active && (gamePhase === 'playing' || gamePhase === 'detonating' || gamePhase === 'secured' ? <div className={`core-trigger defense-core ${gamePhase === 'secured' ? 'secured-core' : gameLevel === 5 ? 'ddos-core' : ''}`}><span>{gamePhase === 'secured' ? 'SECURED!' : gameLevel === 5 ? 'DDOS ATTACK!' : 'DEFEND!'}</span></div> : <button className="core-trigger" onClick={onPulse} aria-expanded={reveal} aria-label={reveal ? 'Close core and retract all modules' : 'Expose core and unfold all five modules'}><span>{reveal ? 'CLOSE' : 'EXPOSE'}<br />CORE</span></button>)}
   </div>;
 }
 

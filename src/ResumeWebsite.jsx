@@ -1,5 +1,7 @@
 import { Component, lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import MatrixRain from './MatrixRain';
+import DefenseHUD from './DefenseHUD';
+import useDefenseGame from './useDefenseGame';
 import { missions, capabilities } from './resumeData';
 import './ResumeWebsite.css';
 
@@ -32,7 +34,7 @@ function useMotionPreference() {
 function Mark() {
   return <svg viewBox="0 0 40 40" aria-hidden="true"><path d="m20 2 17 9v18l-17 9L3 29V11Z"/><path d="M11 25V15l9 10 9-10v10M20 8v5M20 28v5"/></svg>;
 }
-function Entry({ phase, quiet, setQuiet, onEnter }) {
+function Entry({ phase, quiet, onEnter }) {
   const [count, setCount] = useState(quiet ? 5 : 0);
   const [answer, setAnswer] = useState('');
   const [error, setError] = useState('');
@@ -52,7 +54,7 @@ function Entry({ phase, quiet, setQuiet, onEnter }) {
   }
   return <main className={`entry ${phase === 'breaching' ? 'is-breaching' : ''}`}>
     <MatrixRain warp={phase === 'breaching'} quiet={quiet}/><div className="entry-vignette"/>
-    <header className="entry-header"><a href="#" aria-label="The Breach"><Mark/><span>THE BREACH<span className="dim"> / JM.02</span></span></a><button onClick={() => setQuiet(value => !value)}>{quiet ? 'MOTION OFF' : 'MOTION ON'}</button></header>
+    <header className="entry-header"><a href="#" aria-label="Into the Breach"><Mark/><span>INTO THE BREACH<span className="dim"> / JM.02</span></span></a></header>
     <div className="entry-coordinate" aria-hidden="true">FOLLOW THE SIGNAL<br/>THE SURFACE IS ONLY THE BEGINNING.</div>
     <section className="entry-console" aria-labelledby="entry-title">
       <div className="console-chrome"><span><i/> UNREGISTERED CONNECTION</span><span>PORT 001</span></div>
@@ -92,7 +94,7 @@ function DossierContent({ section }) {
 }
 function Terminal({ onClose, onSelect, onReveal, onResume }) {
   const [value, setValue] = useState('');
-  const [history, setHistory] = useState(['THE BREACH / LOCAL COMMAND INTERFACE', 'Type help. There is more beneath the surface.']);
+  const [history, setHistory] = useState(['INTO THE BREACH / LOCAL COMMAND INTERFACE', 'Type help. There is more beneath the surface.']);
   const field = useRef(null); const log = useRef(null); const dialog = useRef(null);
   useEffect(() => { const previous = document.activeElement; field.current?.focus(); return () => { if (previous?.isConnected) previous.focus(); }; }, []);
   useEffect(() => { log.current.scrollTop = log.current.scrollHeight; }, [history]);
@@ -102,8 +104,8 @@ function Terminal({ onClose, onSelect, onReveal, onResume }) {
     if (command === 'exit') { onClose(); return; }
     if (command === 'resume') { onResume(); onClose(); return; }
     if (sections.includes(command) || command === 'whoami') { onSelect(command === 'whoami' ? 'identity' : command); onClose(); return; }
-    const response = command === 'help' ? 'whoami / missions / projects / skills / contact / reveal / resume / clear / exit' : command === 'reveal' ? 'Shell separation initiated. Look beneath the surface.' : command === 'sudo' ? 'You already have permission to think for yourself.' : `Unknown command: ${command}. Type help.`;
-    if (command === 'reveal') onReveal();
+    const switched = command === 'reveal' ? onReveal() : null;
+    const response = command === 'help' ? 'whoami / missions / projects / skills / contact / reveal / resume / clear / exit' : command === 'reveal' ? (switched === false ? 'Defense active. The core is locked open.' : 'System layer switched.') : command === 'sudo' ? 'You already have permission to think for yourself.' : `Unknown command: ${command}. Type help.`;
     setHistory(old => [...old.slice(-50), `visitor@breach:~$ ${command}`, response]);
   };
   return <div className="terminal-scrim" onClick={onClose}><section ref={dialog} className="terminal-window" role="dialog" aria-modal="true" aria-labelledby="terminal-title" onClick={event => event.stopPropagation()} onKeyDown={event => {
@@ -112,20 +114,24 @@ function Terminal({ onClose, onSelect, onReveal, onResume }) {
   }}><div className="console-chrome"><span id="terminal-title">&gt;_ COMMAND INTERFACE</span><span>TYPE EXIT / ESC</span></div><div className="terminal-log" ref={log} role="log" aria-live="polite">{history.map((text, index) => <p key={index}>{text}</p>)}</div><form onSubmit={run}><label htmlFor="terminal-command">visitor@breach:~$</label><input id="terminal-command" ref={field} autoComplete="off" autoCapitalize="none" spellCheck="false" value={value} onChange={event => setValue(event.target.value)} aria-label="Terminal command"/></form></section></div>;
 }
 export default function ResumeWebsite() {
-  const [quiet, setQuiet] = useMotionPreference();
+  const [quiet] = useMotionPreference();
   const [phase, setPhase] = useState('entry');
   const [active, setActive] = useState(null);
   const [reveal, setReveal] = useState(false);
   const [readable, setReadable] = useState(false);
   const [terminal, setTerminal] = useState(false);
   const [fallback, setFallback] = useState(false);
+  const game = useDefenseGame(reveal, terminal || readable || fallback, Boolean(active));
+  const defenseLocked = game.phase === 'detonating' || game.phase === 'playing' || game.phase === 'secured';
+  const alarm = reveal && game.phase !== 'secured';
   const enterTimer = useRef(null); const panel = useRef(null); const terminalButton = useRef(null); const lastOpener = useRef(null);
   const onFallback = useCallback(() => { setFallback(true); setReadable(true); }, []);
   const select = useCallback(id => { lastOpener.current = document.activeElement; setReveal(true); setActive(old => old === id ? null : id); }, []);
-  const toggleReveal = () => { if (reveal) setActive(null); setReveal(value => !value); };
+  const toggleReveal = () => { if (defenseLocked) return false; if (reveal) setActive(null); setReveal(value => !value); return true; };
   const closePanel = useCallback(() => { setActive(null); if (lastOpener.current?.isConnected) lastOpener.current.focus(); }, []);
   useEffect(() => () => clearTimeout(enterTimer.current), []);
   useEffect(() => { if (active) panel.current?.focus(); }, [active]);
+  useEffect(() => { if (game.phase === 'detonating') setActive(null); }, [game.phase]);
   useEffect(() => {
     const key = event => {
       if (event.key === 'Escape' && !terminal) closePanel();
@@ -144,17 +150,18 @@ export default function ResumeWebsite() {
   }, []);
   const enter = () => { if (phase === 'breaching') return; setPhase('breaching'); enterTimer.current = setTimeout(() => setPhase('inside'), quiet ? 120 : 2100); };
   const closeTerminal = () => { setTerminal(false); terminalButton.current?.focus(); };
-  return <div className={`breach-os ${quiet ? 'quiet' : ''} ${reveal ? 'revealed' : ''}`}>
-    {phase !== 'inside' ? <Entry phase={phase} quiet={quiet} setQuiet={setQuiet} onEnter={enter}/> : <>
-      <header className="os-header"><button className="os-brand" onClick={() => { setReadable(false); setActive(null); }}><Mark/><span>THE BREACH<small>JAMES MCGONIGAL / PERSONAL SYSTEM</small></span></button><div className="system-status"><i/> {reveal ? 'UNDERLYING STRUCTURE EXPOSED' : 'CONNECTION ESTABLISHED'}</div><button className="utility readable-toggle" onClick={() => setReadable(value => !value)}>{readable ? '◈ ENTER 3D SYSTEM' : '↗ READABLE RÉSUMÉ'}</button></header>
-      {!readable && !fallback ? <main className={`world ${active ? 'has-dossier' : ''}`}>
-        <div className="world-rain"><MatrixRain quiet={quiet} red={reveal}/></div><div className="world-vignette"/>
-        <SceneBoundary onFailure={onFallback}><Suspense fallback={<div className="loading-scene" role="status">CONSTRUCTING YOUR REALITY<span>_</span></div>}><MachineScene active={active} reveal={reveal} quiet={quiet} onSelect={select} onFallback={onFallback} onPulse={toggleReveal}/></Suspense></SceneBoundary>
-        <div className="world-title"><span className="overline">YOU’RE ON THE OTHER SIDE.</span><h1>A mind.<br/>A machine.<br/><em>No fixed limits.</em></h1><p>James McGonigal<span>CTO / CYBER DEFENSE / BUILDER</span></p></div>
+  return <div className={`breach-os ${quiet ? 'quiet' : ''} ${alarm ? 'revealed' : ''}`}>
+    {phase !== 'inside' ? <Entry phase={phase} quiet={quiet} onEnter={enter}/> : <>
+      <header className="os-header"><button className="os-brand" onClick={() => { setReadable(false); setActive(null); }}><Mark/><span>INTO THE BREACH<small>JAMES MCGONIGAL / PERSONAL SYSTEM</small></span></button><div className="system-status"><i/> {reveal ? 'UNDERLYING STRUCTURE EXPOSED' : 'CONNECTION ESTABLISHED'}</div><button className="utility readable-toggle" onClick={() => setReadable(value => !value)}>{readable ? '◈ ENTER 3D SYSTEM' : '↗ READABLE RÉSUMÉ'}</button></header>
+      {!readable && !fallback ? <main className={`world ${active ? 'has-dossier' : ''} ${reveal ? 'has-defense' : ''}`} data-defense-phase={game.phase}>
+        <div className="world-rain"><MatrixRain quiet={quiet} red={alarm}/></div><div className="world-vignette"/>
+        <SceneBoundary onFailure={onFallback}><Suspense fallback={<div className="loading-scene" role="status">CONSTRUCTING YOUR REALITY<span>_</span></div>}><MachineScene active={active} reveal={reveal} quiet={quiet} onSelect={select} onFallback={onFallback} onPulse={toggleReveal} gamePhase={game.phase} gamePaused={game.paused} onIntercept={game.intercept} onGameEvent={game.onGameEvent} gameLevel={game.level}/></Suspense></SceneBoundary>
+        {reveal && <DefenseHUD game={game}/>}
+        <div className="world-title"><span className="overline">{alarm ? 'SYSTEM COMPROMISED: TRACING VULNERABILITY!' : 'SYSTEM SECURE.'}</span><h1>A mind.<br/>A machine.<br/><em>No fixed limits.</em></h1><p>James McGonigal<span>CTO / CYBER DEFENSE / BUILDER</span></p></div>
         <aside className="system-telemetry" aria-hidden="true"><span>NEURAL TOPOLOGY / JM.02</span><div className="telemetry-bars">{Array.from({length: 18}, (_, i) => <i key={i} style={{'--i': i}}/>)}</div><p>05 NODES ATTACHED<br/>01 HUMAN AT THE CORE<br/>∞ POSSIBLE CONNECTIONS</p><span className="vertical-readout">OBSERVE → QUESTION → RECONSTRUCT</span></aside>
         <div className="core-caption" aria-hidden="true"><span>{reveal ? 'SHELL SEPARATION COMPLETE' : 'IDENTITY ENGINE'}</span><small>{reveal ? 'THE STRUCTURE WAS ALWAYS THERE.' : 'EVERYTHING IS CONNECTED.'}</small></div>
-        {active && <section ref={panel} className="dossier-panel" aria-labelledby="dossier-title" tabIndex={-1} key={active}><div className="dossier-attachment" aria-hidden="true"/><div className="dossier-chrome"><span>NODE 0{sections.indexOf(active) + 1} / DECRYPTED</span><button onClick={closePanel} aria-label="Close dossier">ESC ×</button></div><div className="dossier-scroll"><h2 id="dossier-title">{titles[active]}<span>↳</span></h2><DossierContent section={active}/></div><div className="dossier-footer"><span>CONNECTED TO IDENTITY ENGINE</span><button onClick={() => select(sections[(sections.indexOf(active) + 1) % 5])}>NEXT NODE →</button></div></section>}
-        <div className="world-controls"><span className="interaction-hint">DRAG TO ORBIT <b>·</b> {reveal ? 'SELECT A NODE' : 'EXPOSE THE CORE'} <b>·</b> KEYS 1–5</span><div><button className="utility" aria-pressed={reveal} onClick={toggleReveal}>◈ {reveal ? 'RESTORE THE SHELL' : 'REVEAL THE SYSTEM'}</button><button className="utility" ref={terminalButton} onClick={() => setTerminal(true)}>&gt;_ TERMINAL <kbd>T</kbd></button><button className="motion-button" aria-pressed={!quiet} onClick={() => setQuiet(value => !value)} aria-label={quiet ? 'Enable animation' : 'Pause animation'}>{quiet ? '▶' : 'Ⅱ'}</button></div></div>
+        {active && <section ref={panel} className="dossier-panel" aria-labelledby="dossier-title" tabIndex={-1} key={active}><div className="dossier-attachment" aria-hidden="true"/><div className="dossier-chrome"><span>NODE 0{sections.indexOf(active) + 1} / DECRYPTED</span><button onClick={closePanel} aria-label="Close dossier">ESC ×</button></div><div className="dossier-scroll"><h2 id="dossier-title">{titles[active]}<span>↳</span></h2><DossierContent section={active}/></div><div className="dossier-footer"><span>{game.phase === 'countdown' ? 'TRACE PAUSED / READ AT YOUR PACE' : 'CONNECTED TO IDENTITY ENGINE'}</span><button onClick={() => select(sections[(sections.indexOf(active) + 1) % 5])}>NEXT NODE →</button></div></section>}
+        <div className="world-controls"><span className="interaction-hint">{game.phase === 'playing' ? 'DEFEND THE CORE' : 'DRAG TO ORBIT'} <b>·</b> {game.phase === 'playing' ? 'CLICK / TAP NEAR MISSILES · SPACE TO ZAP' : reveal ? 'SELECT A NODE' : 'EXPOSE THE CORE'} <b>·</b> {game.phase === 'playing' ? 'NO GAME OVER' : 'KEYS 1–5'}</span><div>{defenseLocked ? <span className="utility defense-lock">◈ {game.phase === 'secured' ? 'CORE SECURED / EXPLORE THE RÉSUMÉ' : 'CORE LOCKED / DEFENSE ACTIVE'}</span> : <button className="utility" aria-pressed={reveal} onClick={toggleReveal}>◈ {reveal ? 'RESTORE THE SHELL' : 'REVEAL THE SYSTEM'}</button>}<button className="utility" ref={terminalButton} onClick={() => setTerminal(true)}>&gt;_ TERMINAL <kbd>T</kbd></button></div></div>
       </main> : <main className="readable-resume"><div className="resume-intro"><span className="overline">THE HUMAN-READABLE EDITION</span><h1>James McGonigal<span>_</span></h1><p>CTO · Air Force veteran · Cyber-defense leader</p><div><button className="utility" onClick={() => window.print()}>PRINT / SAVE PDF ↓</button>{!fallback && <button className="utility" onClick={() => setReadable(false)}>RETURN TO THE MACHINE ↗</button>}</div>{fallback && <p role="status">The 3D scene isn’t available in this browser. Your full résumé is available here.</p>}</div>{sections.map(section => <section className="readable-section" key={section} id={`resume-${section}`}><h2>{titles[section]}</h2><DossierContent section={section}/></section>)}</main>}
       {!readable && !fallback && <nav className="module-dock" aria-label="Résumé modules">{sections.map((section, index) => <button key={section} onClick={() => select(section)} aria-pressed={active === section}><span>0{index + 1}</span>{titles[section]}</button>)}</nav>}
       {terminal && <Terminal onClose={closeTerminal} onSelect={select} onReveal={toggleReveal} onResume={() => setReadable(true)}/>}
@@ -163,4 +170,3 @@ export default function ResumeWebsite() {
     <div className="scanlines" aria-hidden="true"/>
   </div>;
 }
-
