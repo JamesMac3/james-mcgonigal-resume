@@ -77,3 +77,9 @@
 .reset-core>span{color:#55ff91!important;font-size:22px!important;text-shadow:0 0 14px #55ff91;animation:none!important}.reset-core>span::before,.reset-core>span::after{display:none}
 [data-defense-phase="lost"] .core-caption,[data-defense-phase="shattering"] .core-caption{display:none}
 @media(prefers-reduced-motion:reduce){.integrity-track>span{transition:none}}
+
+/* Keep the mounted bar hidden outside combat so both entrance and exit can fade. */
+.integrity-panel{opacity:0;visibility:hidden;transition:opacity .65s ease,visibility 0s linear .65s}
+.integrity-panel.is-visible{opacity:1;visibility:visible;transition:opacity .65s ease,visibility 0s}
+.quiet .integrity-panel{transition:none}
+@media(prefers-reduced-motion:reduce){.integrity-panel,.integrity-panel.is-visible{transition:none}}
