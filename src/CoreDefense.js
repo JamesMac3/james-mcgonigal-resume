@@ -1,14 +1,16 @@
 import * as THREE from 'three';
-import { nearestMissile } from './defenseState.js';
+import { nearestMissile, WAVE_QUOTAS, integrityFromScore } from './defenseState.js';
 
 export const MISSILE_POOL_SIZE = 32;
-export const WAVE_QUOTAS = [10, 20, 30, 40, 50];
+export { WAVE_QUOTAS } from './defenseState.js';
 
 // All effects are pooled. Long sessions never accumulate meshes or textures.
 export default class CoreDefense {
   constructor(scene, camera, getCore, onIntercept, onGameEvent = () => {}) {
     this.scene = scene; this.camera = camera; this.getCore = getCore; this.onIntercept = onIntercept;
     this.onGameEvent = onGameEvent; this.level = 1; this.spawned = 0; this.resolved = 0; this.finished = false; this.barrageIndex = 0;
+    this.score = 0; this.failed = false;
+    this.popups = Array.from({length:16}, () => ({position:new THREE.Vector3(), life:0}));
     this.up = new THREE.Vector3(0, 1, 0); this.trailPoint = new THREE.Vector3();
     this.root = new THREE.Group(); scene.add(this.root);
     this.geometries = []; this.materials = []; this.missiles = []; this.bursts = [];
@@ -30,7 +32,7 @@ export default class CoreDefense {
     const flame = geo(new THREE.ConeGeometry(.075, .4, 5));
     const bodyEdges = geo(new THREE.EdgesGeometry(body)); const noseEdges = geo(new THREE.EdgesGeometry(nose)); const finEdges = geo(new THREE.EdgesGeometry(fin));
     for (let i = 0; i < MISSILE_POOL_SIZE; i++) {
-      const group = new THREE.Group(); group.visible = false; this.root.add(group);
+      const group = new THREE.Group(); group.visible = false; group.scale.setScalar(.5); this.root.add(group);
       group.add(new THREE.Mesh(body, hull), new THREE.LineSegments(bodyEdges, outline));
       const tip = new THREE.Group(); tip.position.y = .4; tip.add(new THREE.Mesh(nose, hull), new THREE.LineSegments(noseEdges, outline)); group.add(tip);
       for (let j = 0; j < 2; j++) { const wing = new THREE.LineSegments(finEdges, outline); wing.position.y = -.2; wing.rotation.y = j * Math.PI / 2; group.add(wing); }
@@ -38,26 +40,32 @@ export default class CoreDefense {
       const trailGeo = geo(new THREE.BufferGeometry()); trailGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(18), 3));
       const trailMat = mat(new THREE.LineBasicMaterial({ color: '#dd496f', transparent: true, opacity: .48 }));
       const trail = new THREE.Line(trailGeo, trailMat); trail.visible = false; this.root.add(trail);
-      this.missiles.push({ group, exhaust, trail, active: false, start: new THREE.Vector3(), target: new THREE.Vector3(), direction: new THREE.Vector3(), curve: new THREE.CubicBezierCurve3(), progress: 0, duration: 12, id: i });
+      this.missiles.push({ group, exhaust, trail, active: false, start: new THREE.Vector3(), target: new THREE.Vector3(), direction: new THREE.Vector3(), curve: new THREE.CubicBezierCurve3(), progress: 0, duration: 6, id: i });
     }
     const glyphCanvas = document.createElement('canvas'); glyphCanvas.width = glyphCanvas.height = 256;
     const context = glyphCanvas.getContext('2d');
     context.clearRect(0, 0, 256, 256); context.font = 'bold 37px monospace'; context.textAlign = 'center'; context.textBaseline = 'middle'; context.fillStyle = '#fff';
     [...'01{}<>/#アイウエオカキク'].forEach((char, i) => context.fillText(char, (i % 4) * 64 + 32, Math.floor(i / 4) * 64 + 32));
     this.glyphTexture = new THREE.CanvasTexture(glyphCanvas);
-    // Point sprites sample a 4x4 atlas: the debris is visibly made of code.
-    for (let b = 0; b < 12; b++) {
-      const count = 90; const positions = new Float32Array(count * 3); const velocities = new Float32Array(count * 3);
-      const cells = new Float32Array(count); for (let i = 0; i < count; i++) cells[i] = Math.floor(Math.random() * 16);
-      const geometry = geo(new THREE.BufferGeometry()); geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3)); geometry.setAttribute('glyph', new THREE.BufferAttribute(cells, 1));
+    // One immutable geometry shared by eight bounded effects; motion stays on the GPU.
+    const count = 24; const offsets = new Float32Array(count * 3); const cells = new Float32Array(count);
+    for (let i=0;i<count;i++) {
+      const angle = Math.random()*Math.PI*2; const speed = .7+Math.random()*1.8;
+      offsets[i*3] = Math.cos(angle)*speed; offsets[i*3+1] = Math.sin(angle)*speed; offsets[i*3+2] = (Math.random()-.5)*speed;
+      cells[i] = Math.floor(Math.random()*16);
+    }
+    const debrisGeometry = geo(new THREE.BufferGeometry());
+    debrisGeometry.setAttribute('position', new THREE.BufferAttribute(offsets,3));
+    debrisGeometry.setAttribute('glyph', new THREE.BufferAttribute(cells,1));
+    for (let b=0;b<8;b++) {
       const material = mat(new THREE.ShaderMaterial({
-        uniforms: { atlas: { value: this.glyphTexture }, opacity: { value: 1 }, tint: { value: new THREE.Color('#ff7eac') }, pointScale: { value: 18 } },
-        vertexShader: 'attribute float glyph; varying float cell; uniform float pointScale; void main(){cell=glyph; vec4 mv=modelViewMatrix*vec4(position,1.0); gl_Position=projectionMatrix*mv; gl_PointSize=clamp(pointScale*10.0/max(1.0,-mv.z),5.0,28.0);}',
-        fragmentShader: 'uniform sampler2D atlas; uniform float opacity; uniform vec3 tint; varying float cell; void main(){vec2 tile=vec2(mod(cell,4.0),3.0-floor(cell/4.0)); vec2 uv=(tile+vec2(gl_PointCoord.x,1.0-gl_PointCoord.y))/4.0; float a=texture2D(atlas,uv).a; if(a<0.1)discard; gl_FragColor=vec4(tint,a*opacity);}',
-        transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+        uniforms:{atlas:{value:this.glyphTexture},opacity:{value:1},tint:{value:new THREE.Color('#ff7eac')},pointScale:{value:13},spread:{value:0}},
+        vertexShader:'attribute float glyph; varying float cell; uniform float pointScale; uniform float spread; void main(){cell=glyph; vec4 mv=modelViewMatrix*vec4(position*spread,1.0); gl_Position=projectionMatrix*mv; gl_PointSize=clamp(pointScale*10.0/max(1.0,-mv.z),4.0,18.0);}',
+        fragmentShader:'uniform sampler2D atlas; uniform float opacity; uniform vec3 tint; varying float cell; void main(){vec2 tile=vec2(mod(cell,4.0),3.0-floor(cell/4.0)); vec2 uv=(tile+vec2(gl_PointCoord.x,1.0-gl_PointCoord.y))/4.0; float a=texture2D(atlas,uv).a; if(a<0.1)discard; gl_FragColor=vec4(tint,a*opacity);}',
+        transparent:true,depthWrite:false,blending:THREE.AdditiveBlending
       }));
-      const points = new THREE.Points(geometry, material); points.visible = false; points.frustumCulled = false; this.root.add(points);
-      this.bursts.push({ points, positions, velocities, life: 0, duration: 1.8 });
+      const points = new THREE.Points(debrisGeometry,material); points.visible=false; points.frustumCulled=false; this.root.add(points);
+      this.bursts.push({points,origin:new THREE.Vector3(),target:new THREE.Vector3(),life:0,duration:1.15,energy:1});
     }
     this.bolts = Array.from({ length: 8 }, () => {
       const geometry = geo(new THREE.BufferGeometry()); geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(45), 3));
@@ -67,16 +75,15 @@ export default class CoreDefense {
     });
   }
 
-  burst(position, color = '#ff779e', quiet = false) {
+  burst(position, color = '#ff779e', quiet = false, absorb = true) {
     const burst = this.bursts.find(item => item.life <= 0) || this.bursts.reduce((a, b) => a.life < b.life ? a : b);
-    burst.life = burst.duration = quiet ? .65 : 1.9;
-    burst.points.material.uniforms.tint.value.set(color); burst.points.visible = true;
-    for (let i = 0; i < burst.positions.length; i += 3) {
-      burst.positions.set([position.x, position.y, position.z], i);
-      const angle = Math.random() * Math.PI * 2; const speed = (quiet ? .3 : .7) + Math.random() * (quiet ? .5 : 2.8);
-      burst.velocities.set([Math.cos(angle) * speed, Math.sin(angle) * speed, (Math.random() - .5) * speed], i);
-    }
-    burst.points.geometry.attributes.position.needsUpdate = true;
+    burst.life = burst.duration = absorb ? 1.15 : 1.6; burst.absorb = absorb; burst.energy = quiet ? .25 : 1;
+    burst.origin.copy(position); burst.target.copy(this.getCore());
+    burst.points.position.copy(position); burst.points.rotation.z = Math.random()*Math.PI*2;
+    burst.points.material.uniforms.tint.value.set(color);
+    burst.points.material.uniforms.opacity.value = 1; burst.points.material.uniforms.spread.value = 0;
+    burst.points.visible = true;
+    return burst;
   }
 
   project(position) {
@@ -85,7 +92,7 @@ export default class CoreDefense {
   }
 
   fire(x, y, quiet = false) {
-    if (this.phase !== 'playing' || this.paused) return false;
+    if (this.phase !== 'playing' || this.paused || this.failed || this.finished) return false;
     const p = this.powerup;
     if (p.state === 'flying') {
       const point = this.project(p.group.position);
@@ -102,20 +109,17 @@ export default class CoreDefense {
   }
 
   interceptMissile(missile, quiet, origin = null) {
-    if (!missile.active) return false;
+    if (!missile.active || this.failed || this.finished) return false;
     const bolt = this.bolts.find(item => item.life <= 0) || this.bolts[0];
     bolt.origin = origin?.clone() || null;
     bolt.line.material.color.set(origin ? '#55ff91' : '#bdeeff');
     bolt.target.copy(missile.group.position); bolt.life = .38; bolt.line.visible = true;
     this.burst(missile.group.position, '#a9eaff', quiet);
     missile.active = false; missile.group.visible = false; missile.trail.visible = false;
-    this.onIntercept(); this.resolveMissile(); return true;
-  }
-
-  fireNearest(quiet) {
-    const target = this.missiles.filter(item => item.active).sort((a, b) => b.progress - a.progress)[0];
-    if (target) { const point = this.project(target.group.position); return this.fire(point.x, point.y, quiet); }
-    return false;
+    this.score += 100;
+    const popup = this.popups.find(p => p.life <= 0) || this.popups.reduce((a,b)=>a.life < b.life ? a : b);
+    popup.position.copy(missile.group.position); popup.life = 1;
+    this.onIntercept({praise:Math.random() < .28 ? (Math.random() < .5 ? 'NICE SHOT!' : 'AWESOME!') : null}); this.resolveMissile(); return true;
   }
 
   launchPowerup() {
@@ -152,6 +156,7 @@ export default class CoreDefense {
   reportWave() { this.onGameEvent({ type: 'WAVE', level: this.level, resolved: this.resolved, quota: WAVE_QUOTAS[this.level - 1] }); }
 
   resolveMissile() {
+    if (this.failed) return;
     this.resolved++; this.reportWave();
     if (this.resolved < WAVE_QUOTAS[this.level - 1]) return;
     if (this.level === 5) { this.finished = true; this.onGameEvent({ type: 'SECURED' }); return; }
@@ -171,24 +176,36 @@ export default class CoreDefense {
     missile.curve.v0.copy(missile.start); missile.curve.v3.copy(missile.target);
     missile.curve.v1.lerpVectors(missile.start, missile.target, .3).add(new THREE.Vector3(0, bend, (Math.random() - .5) * 2));
     missile.curve.v2.lerpVectors(missile.start, missile.target, .7).add(new THREE.Vector3((Math.random() - .5) * 2, -bend * .45, (Math.random() - .5) * 2));
-    missile.duration = 12 - (this.level - 1) * 1.15 + Math.random() * 1.5; this.spawned++; missile.progress = 0; missile.active = true;
+    missile.duration = (12 - (this.level - 1) * 2.2 + Math.random() * 1.5) / 2; this.spawned++; missile.progress = 0; missile.active = true;
     missile.group.visible = true; missile.trail.visible = true;
   }
 
   update(dt, { phase, paused, quiet, width, height }) {
     this.width = width; this.height = height; this.paused = paused;
     if (phase !== this.phase) {
-      if (phase === 'playing') { this.level = 1; this.spawned = 0; this.resolved = 0; this.finished = false; this.barrageIndex = 0; this.spawnIn = .65; this.reportWave(); }
+      if (phase === 'playing') { this.score = 0; this.failed = false; this.level = 1; this.spawned = 0; this.resolved = 0; this.finished = false; this.barrageIndex = 0; this.spawnIn = .65; this.reportWave(); }
       if (phase === 'idle' || phase === 'countdown') this.clear();
+      if (phase === 'failing') {
+        this.failed = true;
+        for (const missile of this.missiles) { missile.active = false; missile.group.visible = false; missile.trail.visible = false; }
+        this.powerup.group.visible = false;
+      }
+      if (phase === 'shattering') {
+        for (const burst of this.bursts) burst.life = 0;
+        for (let i=0;i<this.bursts.length;i++) {
+          const burst = this.burst(this.getCore(), '#ff234d', quiet, false);
+          if (!quiet) burst.energy = 3;
+        }
+      }
       this.phase = phase;
     }
     if (paused) return;
     this.elapsed += dt; this.impact = Math.max(0, this.impact - dt * 2);
-    if (phase === 'playing' && !this.finished) {
+    if (phase === 'playing' && !this.finished && !this.failed) {
       this.spawnIn -= dt;
       if (this.spawnIn <= 0) {
         let batch = this.level === 5 ? 10 : 1;
-        const thresholds = this.level === 3 ? [7, 18] : this.level === 4 ? [6, 17, 28] : [];
+        const thresholds = this.level === 3 ? [5, 10, 15, 20, 25] : this.level === 4 ? [6, 17, 28] : [];
         if (this.barrageIndex < thresholds.length && this.spawned >= thresholds[this.barrageIndex]) {
           batch = (this.level === 3 ? 2 : 3) + Math.floor(Math.random() * 2); this.barrageIndex++;
         }
@@ -196,7 +213,7 @@ export default class CoreDefense {
         this.spawnIn = this.level === 5 ? 3 : 2.5 - (this.level - 1) * .3;
       }
       for (const missile of this.missiles) {
-        if (!missile.active) continue;
+        if (!missile.active || this.failed) continue;
         missile.progress = Math.min(1, missile.progress + dt / missile.duration);
         missile.curve.getPoint(missile.progress, missile.group.position);
         missile.curve.getTangent(missile.progress, missile.direction).normalize();
@@ -215,20 +232,28 @@ export default class CoreDefense {
             this.powerup.state = 'lost'; this.powerup.group.visible = false;
             this.onGameEvent({type:'POWERUP',status:'lost'});
           }
-          this.onGameEvent({ type: 'IMPACT' }); this.resolveMissile();
+          this.score -= 200;
+          this.onGameEvent({ type: 'IMPACT' });
+          if (integrityFromScore(this.score) <= -1) { this.failed = true; this.onGameEvent({type:'FAIL'}); }
+          else this.resolveMissile();
           missile.active = false; missile.group.visible = false; missile.trail.visible = false;
         }
       }
     }
-    if (phase === 'playing' && !this.finished) this.updatePowerup(dt, quiet);
+    if (phase === 'playing' && !this.finished && !this.failed) this.updatePowerup(dt, quiet);
     if (phase === 'secured') this.powerup.group.visible = false;
     for (const burst of this.bursts) {
       if (burst.life <= 0) continue;
       burst.life -= dt; burst.points.visible = burst.life > 0;
-      burst.points.material.uniforms.opacity.value = Math.max(0, burst.life / burst.duration);
-      for (let i = 0; i < burst.positions.length; i++) burst.positions[i] += burst.velocities[i] * dt;
-      burst.points.geometry.attributes.position.needsUpdate = true;
+      if (burst.life <= 0) continue;
+      const age = burst.duration - burst.life;
+      const pull = burst.absorb ? THREE.MathUtils.smoothstep(age,.25,burst.duration) : 0;
+      // Move and shrink the whole cloud, suggesting absorption without particle chasing.
+      burst.points.position.lerpVectors(burst.origin,burst.target,pull*.72);
+      burst.points.material.uniforms.spread.value = burst.energy * (burst.absorb ? Math.min(age,.3)*(1-pull*.85) : age);
+      burst.points.material.uniforms.opacity.value = burst.absorb ? 1-pull : burst.life/burst.duration;
     }
+    for (const popup of this.popups) popup.life = Math.max(0, popup.life - dt);
     for (const bolt of this.bolts) {
       if (bolt.life <= 0) continue;
       bolt.life -= dt; bolt.line.visible = bolt.life > 0; bolt.line.material.opacity = Math.max(0, bolt.life / .38);
@@ -243,6 +268,7 @@ export default class CoreDefense {
   }
 
   clear() {
+    this.score = 0; this.failed = false; for (const popup of this.popups) popup.life = 0;
     Object.assign(this.powerup, {state:'waiting',time:0,shotIn:2,launched:false}); this.powerup.group.visible = false;
     for (const missile of this.missiles) { missile.active = false; missile.group.visible = false; missile.trail.visible = false; }
     for (const burst of this.bursts) { burst.life = 0; burst.points.visible = false; }

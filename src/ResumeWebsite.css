@@ -70,3 +70,10 @@
 @keyframes ddos-alert{50%{opacity:.45;text-shadow:0 0 30px #ff285a}}
 .quiet .ddos-core>span{animation:none}
 @media(prefers-reduced-motion:reduce){.ddos-core>span{animation:none}}
+
+.hit-score{position:absolute;left:0;top:0;z-index:5;color:#b7ecff;text-shadow:0 0 10px #43b9ff;font:bold 22px var(--mono);pointer-events:none}.hit-score[hidden]{display:none}
+.integrity-panel{position:absolute;top:calc(50% + 115px);left:50%;transform:translateX(-50%);width:230px;z-index:4;pointer-events:none;font:9px var(--mono);letter-spacing:1.4px;color:#b4e9ff}.integrity-panel>div:first-child{display:flex;justify-content:space-between;margin-bottom:9px}.integrity-track{height:6px;background:#152634;border:1px solid #5687a455}.integrity-track>span{display:block;height:100%;background:#71d0ff;box-shadow:0 0 14px #42b5ff;transition:width 1.4s ease}
+.defense-core>span::before,.defense-core>span::after{content:attr(data-label)}
+.reset-core>span{color:#55ff91!important;font-size:22px!important;text-shadow:0 0 14px #55ff91;animation:none!important}.reset-core>span::before,.reset-core>span::after{display:none}
+[data-defense-phase="lost"] .core-caption,[data-defense-phase="shattering"] .core-caption{display:none}
+@media(prefers-reduced-motion:reduce){.integrity-track>span{transition:none}}

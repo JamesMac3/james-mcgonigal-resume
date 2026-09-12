@@ -35,7 +35,8 @@ export default function useDefenseGame(reveal, suspended, dossierOpen) {
     return () => cancelAnimationFrame(frame);
   }, [reveal]);
   const onGameEvent = useCallback(event => dispatch(event), []);
-  const intercept = useCallback(() => dispatch({ type: 'HIT' }), []);
+  const intercept = useCallback(event => dispatch({ type: 'HIT', praise:event?.praise }), []);
+  const restart = useCallback(() => { setPaused(false); dispatch({type:'ARM'}); }, []);
   const togglePause = useCallback(() => setPaused(value => !value), []);
-  return { ...game, paused: isPaused, manuallyPaused: paused, onGameEvent, intercept, togglePause };
+  return { ...game, paused: isPaused, manuallyPaused: paused, onGameEvent, intercept, restart, togglePause };
 }

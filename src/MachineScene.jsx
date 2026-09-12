@@ -20,16 +20,17 @@ function glowTexture() {
   return new THREE.CanvasTexture(canvas);
 }
 
-export default function MachineScene({ active, reveal, quiet, onSelect, onFallback, onPulse, gamePhase, gamePaused, onIntercept, onGameEvent, gameLevel }) {
+export default function MachineScene({ active, reveal, quiet, onSelect, onFallback, onPulse, gamePhase, gamePaused, onIntercept, onGameEvent, gameLevel, integrity, praise, onRestart }) {
+  const popupLabels = useRef([]);
   const mount = useRef(null);
   const labels = useRef([]);
   const cable = useRef(null);
   const targets = useRef([]);
   const defenseRef = useRef(null);
   const powerupTarget = useRef(null);
-  const current = useRef({ active, reveal, quiet, gamePhase, gamePaused, onIntercept, onGameEvent, gameLevel });
+  const current = useRef({ active, reveal, quiet, gamePhase, gamePaused, onIntercept, onGameEvent, gameLevel, integrity, praise, onRestart });
   const [ready, setReady] = useState(false);
-  useEffect(() => { current.current = { active, reveal, quiet, gamePhase, gamePaused, onIntercept, onGameEvent, gameLevel }; }, [active, reveal, quiet, gamePhase, gamePaused, onIntercept, onGameEvent, gameLevel]);
+  useEffect(() => { current.current = { active, reveal, quiet, gamePhase, gamePaused, onIntercept, onGameEvent, gameLevel, integrity, praise, onRestart }; }, [active, reveal, quiet, gamePhase, gamePaused, onIntercept, onGameEvent, gameLevel, integrity, praise, onRestart]);
 
   useEffect(() => {
     const host = mount.current;
@@ -58,6 +59,11 @@ export default function MachineScene({ active, reveal, quiet, onSelect, onFallba
     const shell = cage(1.9, 1, '#80d9b0', core);
     const inner = cage(1.15, 0, '#b4ffd3', core);
     const heart = new THREE.Mesh(geometry(new THREE.OctahedronGeometry(.55)), meshMaterial('#bbffd2', .8)); core.add(heart);
+    const rebuiltGeometry = geometry(new THREE.IcosahedronGeometry(1.15, 2));
+    const rebuilt = new THREE.Mesh(rebuiltGeometry, material(new THREE.MeshStandardMaterial({color:'#9fe5ff',emissive:'#278cdb',emissiveIntensity:.7,flatShading:true,side:THREE.DoubleSide}))); inner.add(rebuilt);
+    let displayedIntegrity = 0;
+    const remnant = new THREE.Mesh(geometry(new THREE.BoxGeometry(.85,.85,.85)), material(new THREE.MeshBasicMaterial({color:'#ff153f'}))); machine.add(remnant); remnant.visible=false;
+    const coreBlue = new THREE.Color('#55bdff');
     const shellFaces = new THREE.Mesh(geometry(new THREE.IcosahedronGeometry(1.68, 1)), material(new THREE.MeshPhysicalMaterial({ color: '#163f30', metalness: .95, roughness: .25, transparent: true, opacity: .22, side: THREE.DoubleSide }))); core.add(shellFaces);
     const ambientLight = new THREE.AmbientLight('#75ffa1', 2); scene.add(ambientLight);
     const light = new THREE.PointLight('#c8a5ff', 35); light.position.set(3, 4, 5); scene.add(light);
@@ -120,8 +126,12 @@ export default function MachineScene({ active, reveal, quiet, onSelect, onFallba
     const fogGreen = scene.fog.color.clone();
     const fogRed = new THREE.Color('#0c0406');
     const corePosition = new THREE.Vector3();
-    const defense = new CoreDefense(scene, camera, () => machine.getWorldPosition(corePosition), () => current.current.onIntercept(), event => current.current.onGameEvent(event));
+    const defense = new CoreDefense(scene, camera, () => machine.getWorldPosition(corePosition), event => current.current.onIntercept(event), event => current.current.onGameEvent(event));
     defenseRef.current = defense;
+    // Compile debris before the first interception to avoid a shader compilation hitch.
+    defense.bursts.forEach(burst => {burst.points.visible = true;});
+    renderer.compile(scene,camera);
+    defense.bursts.forEach(burst => {burst.points.visible = false;});
     let previousGamePhase = 'idle';
     const pointer = new THREE.Vector2(); const drag = { down: false, x: 0, turn: 0, target: 0 };
     const resize = () => { width = host.clientWidth; height = host.clientHeight; renderer.setSize(width, height); camera.aspect = width / height; camera.updateProjectionMatrix(); };
@@ -134,12 +144,6 @@ export default function MachineScene({ active, reveal, quiet, onSelect, onFallba
         const rect = host.getBoundingClientRect(); defense.fire(event.clientX - rect.left, event.clientY - rect.top, current.current.quiet);
       }
     };
-    const defendKey = event => {
-      if (event.code === 'Space' && current.current.gamePhase === 'playing' && !event.target.closest('input,textarea,button')) {
-        event.preventDefault(); defense.fireNearest(current.current.quiet);
-      }
-    };
-    window.addEventListener('keydown', defendKey);
     const lost = event => { event.preventDefault(); onFallback(); };
     host.addEventListener('pointermove', move); host.addEventListener('pointerdown', down); host.addEventListener('pointerup', up); host.addEventListener('pointercancel', up);
     renderer.domElement.addEventListener('webglcontextlost', lost);
@@ -177,6 +181,16 @@ export default function MachineScene({ active, reveal, quiet, onSelect, onFallba
       machine.rotation.x = state.quiet ? 0 : pointer.y * .035;
       core.rotation.set(time * .055, time * .11, time * .025);
       core.scale.setScalar(1 + defense.impact * .055);
+      const destroyed = ['shattering','lost'].includes(state.gamePhase);
+      core.visible = !destroyed; teeth.visible = !destroyed; rings.forEach(r => {r.visible = !destroyed;});
+      remnant.visible = state.gamePhase === 'lost'; remnant.material.color.set('#ff153f');
+      core.position.x = state.gamePhase === 'failing' && !state.quiet ? Math.sin(now * .15) * .16 : 0;
+      core.scale.multiplyScalar(state.gamePhase === 'failing' && !state.quiet ? 1 + Math.sin(now*.07)*.15 : 1);
+      displayedIntegrity = THREE.MathUtils.damp(displayedIntegrity, Math.max(0,state.integrity || 0), 2, dt);
+      rebuilt.visible = displayedIntegrity > .01;
+      rebuiltGeometry.setDrawRange(0, Math.min(rebuiltGeometry.attributes.position.count,Math.floor((displayedIntegrity > 99.9 ? 100 : displayedIntegrity)/100 * rebuiltGeometry.attributes.position.count/3)*3));
+      rebuilt.material.color.set('#9fe5ff'); rebuilt.material.emissive.set('#278cdb');
+      core.traverse(object => { if (object.material?.color && object !== rebuilt && state.gamePhase !== 'secured') object.material.color.lerp(coreBlue,displayedIntegrity/100); });
       const inCombat = state.gamePhase === 'playing';
       const spread = inCombat ? .85 : state.reveal ? 1.65 : 1;
       shell.scale.lerp(new THREE.Vector3(spread, spread, spread), Math.min(dt * 3, 1));
@@ -204,7 +218,7 @@ export default function MachineScene({ active, reveal, quiet, onSelect, onFallba
         particleGeometry.attributes.position.needsUpdate = true;
       }
       nodes.forEach(node => {
-        const deployed = state.reveal && state.gamePhase !== 'playing' && (state.quiet || now - deploymentStarted >= node.index * 90) ? 1 : 0;
+        const deployed = state.reveal && !['playing','failing','shattering','lost'].includes(state.gamePhase) && (state.quiet || now - deploymentStarted >= node.index * 90) ? 1 : 0;
         node.deployment = state.quiet || state.gamePhase === 'playing' ? deployed : THREE.MathUtils.damp(node.deployment, deployed, 7, dt);
         const extension = .08 + node.deployment * .92;
         node.group.position.copy(node.home).multiplyScalar(extension);
@@ -222,6 +236,13 @@ export default function MachineScene({ active, reveal, quiet, onSelect, onFallba
       }
       previousGamePhase = state.gamePhase;
       defense.update(dt, { phase: state.gamePhase, paused: state.gamePaused, quiet: state.quiet, width, height });
+      defense.popups.forEach((popup,index) => {
+        const label = popupLabels.current[index]; if (!label) return;
+        label.hidden = popup.life <= 0 || Boolean(state.active);
+        const point = defense.project(popup.position);
+        label.style.transform = `translate(${point.x}px,${point.y - (1-popup.life)*35}px) translate(-50%,-50%)`;
+        label.style.opacity = String(Math.min(1,popup.life*3));
+      });
       const pickup = powerupTarget.current;
       if (pickup) {
         pickup.hidden = defense.powerup.state !== 'flying' || state.gamePhase !== 'playing' || Boolean(state.active);
@@ -260,20 +281,23 @@ export default function MachineScene({ active, reveal, quiet, onSelect, onFallba
     frame = requestAnimationFrame(render); setReady(true);
     return () => {
       cancelAnimationFrame(frame); observer.disconnect();
-      window.removeEventListener('keydown', defendKey); defense.dispose(); defenseRef.current = null;
+      defense.dispose(); defenseRef.current = null;
       host.removeEventListener('pointermove', move); host.removeEventListener('pointerdown', down); host.removeEventListener('pointerup', up); host.removeEventListener('pointercancel', up);
       renderer.domElement.removeEventListener('webglcontextlost', lost);
       geometries.forEach(value => value.dispose()); materials.forEach(value => value.dispose()); texture.dispose(); renderer.dispose(); renderer.domElement.remove();
     };
   }, [onFallback]);
 
-  return <div ref={mount} className={`machine-scene ${ready ? 'ready' : ''} ${reveal ? 'cards-deployed' : 'core-sealed'} ${gamePhase === 'detonating' ? 'cards-detonating' : ''} ${gamePhase === 'playing' ? 'defense-playing' : ''}`} aria-label={gamePhase === 'playing' ? 'Core defense. Click or tap near a missile to zap it. Space intercepts the nearest threat. No loss condition.' : 'Interactive identity machine. Drag to rotate. Expose the core to unfold its five modules.'}>
+  return <div ref={mount} className={`machine-scene ${ready ? 'ready' : ''} ${reveal ? 'cards-deployed' : 'core-sealed'} ${gamePhase === 'detonating' ? 'cards-detonating' : ''} ${gamePhase === 'playing' ? 'defense-playing' : ''}`} aria-label={gamePhase === 'playing' ? 'Core defense. Click or tap near a missile to zap it. Protect core integrity. Falling below minus one percent destroys the core.' : 'Interactive identity machine. Drag to rotate. Expose the core to unfold its five modules.'}>
     <div className="machine-crosshair" aria-hidden="true" />
     <svg className="dossier-cable" aria-hidden="true" style={{ opacity: active ? 1 : 0 }}><path ref={cable}/></svg>
-    {modules.map((module, index) => <button ref={element => { labels.current[index] = element; }} key={module.id} className={`satellite-label ${active === module.id ? 'selected' : ''}`} style={{ '--node-color': module.color }} onClick={() => onSelect(module.id)} aria-hidden={!reveal || gamePhase === 'playing' || gamePhase === 'detonating'} tabIndex={reveal && gamePhase !== 'playing' && gamePhase !== 'detonating' ? 0 : -1} aria-pressed={active === module.id}><span className="satellite-index">0{index + 1} <span>↗</span></span><strong>{module.title}</strong><small>{module.sub}</small><span className="satellite-pin" /></button>)}
+    {modules.map((module, index) => <button ref={element => { labels.current[index] = element; }} key={module.id} className={`satellite-label ${active === module.id ? 'selected' : ''}`} style={{ '--node-color': module.color }} onClick={() => onSelect(module.id)} aria-hidden={!reveal || ['playing','detonating','failing','shattering','lost'].includes(gamePhase)} tabIndex={reveal && !['playing','detonating','failing','shattering','lost'].includes(gamePhase) ? 0 : -1} aria-pressed={active === module.id}><span className="satellite-index">0{index + 1} <span>↗</span></span><strong>{module.title}</strong><small>{module.sub}</small><span className="satellite-pin" /></button>)}
     {Array.from({ length: MISSILE_POOL_SIZE }, (_, index) => <button key={index} hidden className="missile-hitbox" ref={element => { targets.current[index] = element; }} aria-label={`Intercept missile ${index + 1}`} onClick={() => { const defense = defenseRef.current; const missile = defense?.missiles[index]; if (missile?.active) { const point = defense.project(missile.group.position); defense.fire(point.x, point.y, current.current.quiet); } }}/>) }
     <button ref={powerupTarget} hidden className="missile-hitbox powerup-hitbox" style={{width:96,height:96,zIndex:4}} aria-label="Capture green cube auto-defense powerup" onClick={() => { const defense = defenseRef.current; if (defense?.powerup.state === 'flying') { const point = defense.project(defense.powerup.group.position); defense.fire(point.x, point.y, current.current.quiet); } }}/>
-    {!active && (gamePhase === 'playing' || gamePhase === 'detonating' || gamePhase === 'secured' ? <div className={`core-trigger defense-core ${gamePhase === 'secured' ? 'secured-core' : gameLevel === 5 ? 'ddos-core' : ''}`}><span>{gamePhase === 'secured' ? 'SECURED!' : gameLevel === 5 ? 'DDOS ATTACK!' : 'DEFEND!'}</span></div> : <button className="core-trigger" onClick={onPulse} aria-expanded={reveal} aria-label={reveal ? 'Close core and retract all modules' : 'Expose core and unfold all five modules'}><span>{reveal ? 'CLOSE' : 'EXPOSE'}<br />CORE</span></button>)}
+    {Array.from({length:16}, (_,i)=><span key={i} hidden ref={el=>{popupLabels.current[i]=el;}} className="hit-score" aria-hidden="true">+100</span>)}
+    {!active && reveal && <div className="integrity-panel"><div>CORE INTEGRITY <strong>{Math.max(-100,integrity || 0).toFixed(1)}%</strong></div><div className="integrity-track" role="progressbar" aria-label="Core integrity" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.max(0,integrity || 0)}><span style={{width:`${Math.max(0,integrity || 0)}%`}}/></div></div>}
+    {!active && gamePhase === 'lost' && <button className="core-trigger reset-core" onClick={onRestart}><span>RESET CORE</span></button>}
+    {!active && gamePhase !== 'lost' && (['playing','detonating','failing','shattering','secured'].includes(gamePhase) ? <div className={`core-trigger defense-core ${gamePhase === 'secured' ? 'secured-core' : gameLevel === 5 ? 'ddos-core' : ''}`}><span data-label={gamePhase === 'failing' ? 'CORE FAILURE' : gamePhase === 'shattering' ? '' : gamePhase === 'secured' ? 'SECURED!' : praise || (gameLevel === 5 ? 'DDOS ATTACK!' : 'DEFEND!')}>{gamePhase === 'failing' ? 'CORE FAILURE' : gamePhase === 'shattering' ? '' : gamePhase === 'secured' ? 'SECURED!' : praise || (gameLevel === 5 ? 'DDOS ATTACK!' : 'DEFEND!')}</span></div> : <button className="core-trigger" onClick={onPulse} aria-expanded={reveal} aria-label={reveal ? 'Close core and retract all modules' : 'Expose core and unfold all five modules'}><span>{reveal ? 'CLOSE' : 'EXPOSE'}<br />CORE</span></button>)}
   </div>;
 }
 

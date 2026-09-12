@@ -1,9 +1,12 @@
+export const WAVE_QUOTAS = [5, 20, 30, 40, 50];
+export const INTEGRITY_TARGET = WAVE_QUOTAS.slice(0, 4).reduce((sum, n) => sum + n, 0);
+export const integrityFromScore = score => Math.min(100, score / (INTEGRITY_TARGET * 100) * 100);
 export const COUNTDOWN_MS = 30_000;
 export const DETONATION_MS = 900;
 export const POINTS_PER_INTERCEPT = 100;
 
 export function initialDefenseState() {
-  return { phase: 'idle', remaining: COUNTDOWN_MS, detonation: 0, score: 0, hits: 0, impacts: 0, rewardMs: 0, delta: 0, level: 1, resolved: 0, quota: 10 };
+  return { phase: 'idle', remaining: COUNTDOWN_MS, detonation: 0, score: 0, hits: 0, impacts: 0, rewardMs: 0, delta: 0, level: 1, resolved: 0, quota: WAVE_QUOTAS[0], integrity: 0, failureMs: 0, praise: null };
 }
 
 export function defenseReducer(state, action) {
@@ -13,14 +16,24 @@ export function defenseReducer(state, action) {
     case 'DOSSIER_CLOSED': return state.phase === 'countdown' ? { ...state, remaining: COUNTDOWN_MS } : state;
     case 'WAVE': return state.phase === 'playing' ? { ...state, level: action.level, resolved: action.resolved, quota: action.quota } : state;
     case 'SECURED': return state.phase === 'playing' ? { ...state, phase: 'secured', rewardMs: 0 } : state;
-    case 'IMPACT': return state.phase === 'playing' ? { ...state, score: state.score - 200, impacts: state.impacts + 1, delta: -200, rewardMs: 1000 } : state;
+    case 'IMPACT': {
+      if (state.phase !== 'playing') return state;
+      const score = state.score - 200; const integrity = integrityFromScore(score);
+      return {...state, score, integrity, impacts:state.impacts+1, delta:-200, rewardMs:1000, phase:integrity <= -1 ? 'failing' : 'playing', failureMs:0};
+    }
+    case 'FAIL': return state.phase === 'playing' ? {...state,phase:'failing',failureMs:0} : state;
     case 'RESET': return initialDefenseState();
     case 'HIT': return state.phase === 'playing'
-      ? { ...state, score: state.score + POINTS_PER_INTERCEPT, hits: state.hits + 1, delta: 100, rewardMs: 1000 }
+      ? { ...state, score: state.score + POINTS_PER_INTERCEPT, hits: state.hits + 1, integrity: integrityFromScore(state.score + POINTS_PER_INTERCEPT), praise: action.praise || null, delta: 100, rewardMs: 1000 }
       : state;
     case 'TICK': {
       if (action.paused || state.phase === 'idle') return state;
       const elapsed = Math.max(0, action.elapsed);
+      if (state.phase === 'failing' || state.phase === 'shattering') {
+        const failureMs = state.failureMs + elapsed;
+        const duration = state.phase === 'failing' ? 1300 : 1800;
+        return failureMs >= duration ? {...state,phase:state.phase === 'failing' ? 'shattering' : 'lost',failureMs:0} : {...state,failureMs};
+      }
       if (state.phase === 'countdown') {
         const remaining = Math.max(0, state.remaining - elapsed);
         return remaining > 0 ? { ...state, remaining } : { ...state, phase: 'detonating', remaining: 0, detonation: Math.min(DETONATION_MS, elapsed - state.remaining) };
